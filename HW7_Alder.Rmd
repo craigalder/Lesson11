@@ -21,10 +21,14 @@ library(parallel)
 library(randomForestSRC)
 library(ggRandomForests)
 library(mosaic)
+library(ggplot2)
+library(HistData)
+library(car)
+library(stargazer)
 
 # Create the NHANES dataset again
 
-people <- NHANES %>% dplyr::select(DaysMentHlthBad, Depressed, PhysActiveDays, AlcoholYear, MaritalStatus, Work, Age, Gender, Poverty, BMI, HHIncome, PhysActive, SleepTrouble, SleepHrsNight) 
+people <- NHANES %>% dplyr::select(DaysMentHlthBad, PhysActive, AlcoholYear, Age, SleepHrsNight, SleepTrouble) 
 #%>% na.omit()
 glimpse(people)
 class(people)
@@ -36,18 +40,13 @@ glimpse(people)
 # Convert factors to numeric - the packages just seem to work better that way
 #health
 people$DaysMentHlthBad <- as.numeric(people$DaysMentHlthBad)
-people$Depressed <- as.numeric(people$Depressed)
-people$BMI <- as.numeric(people$BMI)
 people$PhysActive <- as.numeric(people$PhysActive)
+people$AlcoholYear <- as.numeric(people$AlcoholYear)
 #demographics
-people$MaritalStatus <- as.numeric(people$MaritalStatus)
-people$Work <- as.numeric(people$Work)
-people$Poverty <- as.numeric(people$Poverty)
-people$HHIncome <- as.numeric(people$HHIncome)
-people$Gender <- as.numeric(people$Gender)
+people$Age <- as.numeric(people$Age)
 
 #sleep
-people$SleepTrouble <- as.numeric(SleepTrouble$BMI)
+people$SleepTrouble <- as.numeric(people$SleepTrouble)
 people$SleepHrsNight <- as.numeric(people$SleepHrsNight)
 
 people <- na.omit(people)
@@ -55,7 +54,6 @@ people <- na.omit(people)
 glimpse(people)
 ```
 
-```
 
 1. In the dataset there is a discrete variable called SleepTrouble indicating whether each participant has trouble sleeping or not. You are going to build a set of classifiers for this dependent variable. You may use any (set of) independent variable(s) you like except for the variable callsed SleepHrsNight. 
 
@@ -64,54 +62,57 @@ For each of the model types (null model, logistic regression, decision tree, ran
 Null Model
 **Building model**
 ```{r}
-RegModel.1 <- 
-  lm(quality~alcohol+chlorides+citric.acid+density.log+fixed.acidity.log+free.sulf.diox.log+pH+residual.sugar+sulphates+total.sulfur.dioxide+volatile.acidity,
-   data=White_wines)
-summary(RegModel.1)
+RegModel1 <- 
+  lm(SleepTrouble~DaysMentHlthBad + PhysActive + AlcoholYear + Age,
+   data=people)
+summary(RegModel1)
 ```
 **Effectiveness**
-For each 1-unit increase in alcohol (I am guessing 1 percent alcohol content), the rating of quality increases by 0.198 on a 7 point scale, holding all other variables (different qualities of the wine) constant. This is significant at p<.001.
+My current model explains about 6% of the variance in the outcome variable. Each independent variable is statistically significant at p<.01 except the measure for physical activity. This model doesn't explain very much right now, so it will be interesting to see how different methods change the predictive ability of these variables.
 
 **Visualization**
 ```{r}
-scatterplotMatrix(~quality+citric.acid+fixed.acidity.log+alcohol,
-   reg.line=FALSE, smooth=TRUE, spread=FALSE, span=0.5, ellipse=FALSE, 
-  levels=c(.5, .9), id.n=0, diagonal = 'histogram', data=White_wines)
+# diagnostics using residual plots
+residualPlots(RegModel1)
+#added variable plots
+avPlots(RegModel1, id.n=3, id.cex=0.7)
+# run the qq-plot, observations with large residuals
+qqPlot(RegModel1, id.n=3)
+#identify highly influential points
+influenceIndexPlot(RegModel1, id.n=3)
+#influence plot
+influencePlot(RegModel1, id.n=3)
+#heteroscedasticity
+ncvTest(RegModel1)
+#multicollinearity
+vif(RegModel1)
 ``` 
 **Interpret the results. What have you learned about people's sleeping habits?**
+While I am not quite sure how to interpret these graphs with a binary outcome in a least squares regression, it does seem like there are some problems with assumptions about heteroskedasticity and normality. Logistic regression will probably make a lot more sense (at least as far as visualizing).
 
-Decision Tree
-**Building model**
-**Effectiveness**
-**Visualization**
-**Interpret the results. What have you learned about people's sleeping habits?**
+The regression table does tell us that, controlling for the other variables, a 1-unit increase in bad mental health days is associated with a .01 increase in the likelihood of having trouble with sleep. A 1-unit increase in yearly alcohol consumption is associated with a .0001 decrease in the likelihood of struggling with sleep, controlling for all other variables. A 1-unit increase in age is associated with a .003 increase in likelihood of sleep struggle, controlling for the other variables. All these relationships are significant at p<.001. Multicollinearity does not seem to be a problem, and there are no extreme values for the outcome. 
 
 1D. Interpret the results. What have you learned about people's sleeping habits?
 
 Logistic Regression
 **Building model**
 ```{r}
-train <- data[1:800,]
-test <- data[801:889,]
-model <- glm(Survived ~.,family=binomial(link='logit'),data=train)
+people$SleepTrouble[people$SleepTrouble == 1 ] <- 0
+people$SleepTrouble[people$SleepTrouble == 2 ] <- 1
+train <- people[1:8000,]
+test <- people[8001:10000,]
+model <- glm(SleepTrouble~DaysMentHlthBad + PhysActive + AlcoholYear + Age,family=binomial(link='logit'),data=train)
 ##Model goes where ~ is, just like lsq
 summary(model)
 ##https://www.r-bloggers.com/how-to-perform-a-logistic-regression-in-r/
 ```
 **Effectiveness**
-
+A 1 unit increase in bad mental health days is associated with a .057 increase in the logit of sleep trouble, significant at p<.001. Age and alcohol also have significant relationships, while the coefficient for physical activity is quite high.
 **Visualization**
-```{r}
-library(ROCR)
-p <- predict(model, newdata=subset(test,select=c(2,3,4,5,6,7,8)), type="response")
-pr <- prediction(p, test$Survived)
-prf <- performance(pr, measure = "tpr", x.measure = "fpr")
-plot(prf)
+```{r, include=TRUE}
 
-auc <- performance(pr, measure = "auc")
-auc <- auc@y.values[[1]]
-auc
 ```
+
 **Interpret the results. What have you learned about people's sleeping habits?**
 
 Decision Tree
@@ -169,10 +170,11 @@ k-nearest neighbor
 # Apply knn procedure to predict Diabetes
 
 # Let's try different values of k to see how that affects performance
-knn.1 <- knn(train = people, test = people, cl = as.numeric(people$Diabetes), k = 1)
-knn.3 <- knn(train = people, test = people, cl = people$Diabetes, k = 3)
-knn.5 <- knn(train = people, test = people, cl = people$Diabetes, k = 5)
-knn.20 <- knn(train = people, test = people, cl = people$Diabetes, k = 20)
+
+#knn.1 <- knn(train = people, test = people, cl = as.numeric(people$Diabetes), k = 1)
+#knn.3 <- knn(train = people, test = people, cl = people$Diabetes, k = 3)
+#knn.5 <- knn(train = people, test = people, cl = people$Diabetes, k = 5)
+#knn.20 <- knn(train = people, test = people, cl = people$Diabetes, k = 20)
 
 #knn.1
 ```
@@ -182,10 +184,10 @@ Now let's see how well it classifies
 
 # Calculate the percent predicted correctly
 
-100*sum(people$Diabetes == knn.1)/length(knn.1)
-100*sum(people$Diabetes == knn.3)/length(knn.3)
-100*sum(people$Diabetes == knn.5)/length(knn.5)
-100*sum(people$Diabetes == knn.20)/length(knn.20)
+#100*sum(people$Diabetes == knn.1)/length(knn.1)
+#100*sum(people$Diabetes == knn.3)/length(knn.3)
+#100*sum(people$Diabetes == knn.5)/length(knn.5)
+#100*sum(people$Diabetes == knn.20)/length(knn.20)
 
 ```
 
@@ -193,16 +195,14 @@ Now let's see how well it classifies
 
 # Another way to look at success rate against increasing k
 
-table(knn.1, people$Diabetes)
-table(knn.3, people$Diabetes)
-table(knn.5, people$Diabetes)
-table(knn.20, people$Diabetes)
+#table(knn.1, people$Diabetes)
+#table(knn.3, people$Diabetes)
+#table(knn.5, people$Diabetes)
+#table(knn.20, people$Diabetes)
 ```
-
-Now start on line 119 of Lesson 10 to finish (lots of steps).
-
-**Visualization**
-**Interpret the results. What have you learned about people's sleeping habits?**
 
 2. Repeat problem 1 except now you are to use the quantitative variable called SleepHrsNight. The model types are as follows: null model, multiple regression, regression tree, random forest.
 
+I unfortunately just ran out of time this week and won't be able to complete models with SleepHrsNight.
+
+The link to my Github account is [https://github.com/craigalder](https://github.com/craigalder). The link to my repository for this assignment is [https://github.com/craigalder/Lesson11.git](https://github.com/craigalder/Lesson11.git).

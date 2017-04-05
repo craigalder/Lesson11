@@ -1,0 +1,244 @@
+---
+title: "HW7"
+author: "Craig Alder"
+date: "4/5/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Recall the NHANES dataset that we used in Lesson 10. 
+```{r}
+library(tidyverse)
+library(class)
+library(rpart)
+library(NHANES)
+library(RColorBrewer)
+library(plot3D)
+library(parallel)
+library(randomForestSRC)
+library(ggRandomForests)
+library(mosaic)
+library(ggplot2)
+library(HistData)
+library(car)
+library(stargazer)
+
+# Create the NHANES dataset again
+
+people <- NHANES %>% dplyr::select(DaysMentHlthBad, PhysActive, AlcoholYear, Age, SleepHrsNight, SleepTrouble) 
+na.omit(people)
+glimpse(people)
+class(people)
+
+# Convert back to dataframe
+people <- as.data.frame(people)
+glimpse(people)
+
+# Convert factors to numeric - the packages just seem to work better that way
+#health
+people$DaysMentHlthBad <- as.numeric(people$DaysMentHlthBad)
+people$PhysActive <- as.numeric(people$PhysActive)
+people$AlcoholYear <- as.numeric(people$AlcoholYear)
+#demographics
+people$Age <- as.numeric(people$Age)
+
+#sleep
+people$SleepTrouble <- as.numeric(people$SleepTrouble)
+people$SleepHrsNight <- as.numeric(people$SleepHrsNight)
+
+people <- na.omit(people)
+
+glimpse(people)
+```
+
+
+1. In the dataset there is a discrete variable called SleepTrouble indicating whether each participant has trouble sleeping or not. You are going to build a set of classifiers for this dependent variable. You may use any (set of) independent variable(s) you like except for the variable callsed SleepHrsNight. 
+
+**Null Model**
+```{r}
+RegModel1 <- 
+  lm(SleepTrouble~DaysMentHlthBad + PhysActive + AlcoholYear + Age,
+   data=people)
+summary(RegModel1)
+```
+
+My current model explains about 6% of the variance in the outcome variable. Each independent variable is statistically significant at p<.01 except the measure for physical activity. This model doesn't explain very much right now, so it will be interesting to see how different methods change the predictive ability of these variables.
+
+```{r}
+#added variable plots
+avPlots(RegModel1, id.n=3, id.cex=0.7)
+# run the qq-plot, observations with large residuals
+qqPlot(RegModel1, id.n=3)
+#identify highly influential points
+influenceIndexPlot(RegModel1, id.n=3)
+#influence plot
+influencePlot(RegModel1, id.n=3)
+#heteroscedasticity
+ncvTest(RegModel1)
+#multicollinearity
+vif(RegModel1)
+``` 
+
+While I am not quite sure how to interpret these graphs with a binary outcome in a least squares regression, it does seem like there are some problems with assumptions about heteroskedasticity and normality. Logistic regression will probably make a lot more sense (at least as far as visualizing).
+
+The regression table does tell us that, controlling for the other variables, a 1-unit increase in bad mental health days is associated with a .01 increase in the likelihood of having trouble with sleep. A 1-unit increase in yearly alcohol consumption is associated with a .0001 decrease in the likelihood of struggling with sleep, controlling for all other variables. A 1-unit increase in age is associated with a .003 increase in likelihood of sleep struggle, controlling for the other variables. All these relationships are significant at p<.001. Multicollinearity does not seem to be a problem, and there are no extreme values for the outcome. 
+
+**Logistic Regression**
+```{r}
+people$SleepTrouble[people$SleepTrouble == 1 ] <- 0
+people$SleepTrouble[people$SleepTrouble == 2 ] <- 1
+train <- na.omit(people[1:8000,])
+test <- na.omit(people[8001:10000,])
+model <- glm(SleepTrouble~DaysMentHlthBad + PhysActive + AlcoholYear + Age,family=binomial(link='logit'),data=train)
+##Model goes where ~ is, just like lsq
+summary(model)
+##https://www.r-bloggers.com/how-to-perform-a-logistic-regression-in-r/
+```
+
+A 1 unit increase in bad mental health days is associated with a .057 increase in the logit of sleep trouble, significant at p<.001. Age and alcohol also have significant relationships, while the coefficient for physical activity is quite high.
+
+**Decision Tree**
+```{r}
+library(rpart)
+library(tidyverse)
+
+fit<-rpart(SleepTrouble~DaysMentHlthBad + PhysActive + AlcoholYear + Age, data = train, method = "class") 
+
+printcp(fit) # Display the results
+plotcp(fit) # Visualize cross-validation results
+summary(fit) # Detailed summary of fit
+
+library(partykit)
+
+fitallp <- ctree(SleepTrouble~DaysMentHlthBad + PhysActive + AlcoholYear + Age, data = train)
+print(fitallp)
+
+plot(fitallp, main = "Conditional Inference Tree for Ozone")
+```
+
+From the output we can see that group with the highest proportion suffering from disturbed sleep is the group that struggles with mental health almost daily. For this group there is an especially high-risk sub-group that struggles with alcohol with a .79 proportion struggling with sleep. Other notably high proportions, ranging between .25 and .4, include individuals older than 45 that drink alcohol moderately or not at all and individuals struggling with mental health 3-29 days out of a month. The lowest risk individuals are younger than 34 with good mental health and older than 45, drinking alcohol regulary (interesting), and having only 1 day a month of bad mental health.
+
+
+**Random forest**
+```{r}
+library(randomForest)
+set.seed(131)
+
+fitallrf <- randomForest(SleepTrouble ~ DaysMentHlthBad + PhysActive + AlcoholYear + Age, data = train, importance = TRUE)
+impallrf <- importance(fitallrf)
+```
+**Effectiveness**
+**Visualization**
+```{r}
+# view the results
+print(fitallrf)
+importance(fitallrf)
+```
+I'm not sure what these outcomes mean exactly. It looks like it struggled to make many splits.
+
+k-nearest neighbor
+**Building model**
+```{r}
+
+# Create the grid
+
+ages <- range(~ Age, data = people)
+menthealth <- range(~ Age, data = people)
+res <- 100
+fake_grid <- expand.grid(
+  Age = seq(from = ages[1], to = ages[2], length.out = res),
+  DaysMentHlthBad = seq(from = menthealth[1], to = menthealth[2], length.out = res))
+
+#Get the overall proportion, p, of Diabetics
+
+p <- sum(people$SleepTrouble == 1)/length(people$SleepTrouble)
+
+# Null model prediction
+
+pred_null <- rep(p, nrow(fake_grid))
+
+# reinitialize the people dataset - fix SleepTrouble
+# back to factor of "Yes" and "No"
+
+people <- NHANES[, c("Age", "DaysMentHlthBad", "AlcoholYear", 
+                     "PhysActive", "SleepTrouble")]
+people <- na.omit(people)
+#people <- as.data.frame(people)
+
+people <- NHANES %>% 
+  dplyr::select(SleepTrouble, Age, DaysMentHlthBad, AlcoholYear, PhysActive) %>% 
+  na.omit()
+
+form <- as.formula("SleepTrouble ~ Age+ DaysMentHlthBad")
+
+# Evaluate each model on each grid point
+# For the decision tree
+
+dmod_tree <- rpart(form, data = people, 
+                   control = rpart.control(cp = 0.005, minbucket = 30))
+
+# For the forest
+
+set.seed(20371)
+#dmod_forest <- rfsrc(form, data = people, 
+#                     ntree = 201, mtry = 3)
+# try with randomForest instead of randomForestSRC package
+library(randomForest)
+dmod_forest <- randomForest(form, data = people, 
+                     ntree = 201, mtry = 2)
+
+# Now the predictions for tree and forest
+
+pred_tree <- predict(dmod_tree, newdata = fake_grid)[, "Yes"]
+# pred_tree <- predict(dmod_tree, newdata = fake_grid)[, 1]
+pred_forest <- predict(dmod_forest, newdata = fake_grid, 
+                       type = "prob")[, "Yes"]
+
+# K-nearest neighbor prediction
+
+pred_knn <- people %>%
+  select(Age, DaysMentHlthBad) %>%
+  knn(test=select(fake_grid, Age, DaysMentHlthBad), cl = people$SleepTrouble, k=5) %>%
+  as.numeric() - 1
+
+```
+
+**Effectiveness**
+Now let's see how well it classifies
+```{r}
+
+# Calculate the percent predicted correctly
+
+#people$SleepTrouble <- as.numeric(people$SleepTrouble)
+# Let's try different values of k to see how that affects performance
+
+#knn.1 <- knn(train = people, test = people, cl = train, as.numeric(people$Diabetes), k = 1)
+#knn.3 <- knn(train = people, test = people, cl = people$Diabetes, k = 3)
+#knn.5 <- knn(train = people, test = people, cl = people$Diabetes, k = 5)
+#knn.20 <- knn(train = people, test = people, cl = people$Diabetes, k = 20)
+
+#knn.1
+
+#100*sum(people$SleepTrouble == knn.1)/length(knn.1)
+#100*sum(people$SleepTrouble == knn.3)/length(knn.3)
+#100*sum(people$SleepTrouble == knn.5)/length(knn.5)
+#100*sum(people$SleepTrouble == knn.20)/length(knn.20)
+
+```
+
+```{r}
+
+# Another way to look at success rate against increasing k
+
+#table(knn.1, people$SleepTrouble)
+#table(knn.3, people$SleepTrouble)
+#table(knn.5, people$SleepTrouble)
+#table(knn.20, people$SleepTrouble)
+```
+Couldn't get past an error with class in the beginning of the code.
+
+2. Repeat problem 1 except now you are to use the quantitative variable called SleepHrsNight. The model types are as follows: null model, multiple regression, regression tree, random forest.
+
